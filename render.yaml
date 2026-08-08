@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: matchscore
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: MATCH_API_KEY
+        sync: false
+      - key: MATCH_MOCK
+        value: "false"
+      - key: MATCH_CACHE_TTL_SECONDS
+        value: "1800"
+      - key: MATCH_BASE_SEASON
+        value: "2024"
+      - key: MATCH_CORS_ORIGINS
+        value: "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,https://localhost,http://localhost,capacitor://localhost"

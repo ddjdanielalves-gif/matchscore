@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b0e14" />
+    <title>MatchScore — Baixar o App</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #0b0e14;
+        color: #e7ecf5;
+        font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+        padding: 20px;
+      }
+      .card {
+        max-width: 420px;
+        width: 100%;
+        background: #171d2b;
+        border: 1px solid #263048;
+        border-radius: 16px;
+        padding: 28px 24px;
+        text-align: center;
+      }
+      .ball {
+        width: 72px;
+        height: 72px;
+        border-radius: 50%;
+        object-fit: cover;
+        box-shadow: inset 0 0 0 3px #0b0e14, inset 0 0 0 5px #22c55e;
+        margin-bottom: 12px;
+      }
+      h1 {
+        margin: 0;
+        font-size: 26px;
+        letter-spacing: 0.5px;
+      }
+      .sub {
+        color: #8b96ad;
+        margin: 4px 0 20px;
+        font-size: 14px;
+      }
+      .btn {
+        display: block;
+        text-decoration: none;
+        background: #22c55e;
+        color: #07130b;
+        font-weight: 700;
+        font-size: 16px;
+        padding: 14px;
+        border-radius: 10px;
+        margin-bottom: 18px;
+      }
+      .btn:hover {
+        background: #2ee06b;
+      }
+      .steps {
+        text-align: left;
+        color: #8b96ad;
+        font-size: 13px;
+        line-height: 1.7;
+        padding-left: 18px;
+        margin: 0 0 16px;
+      }
+      .disc {
+        font-size: 12px;
+        color: #8b96ad;
+        border-left: 3px solid #f59e0b;
+        padding-left: 10px;
+        text-align: left;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <img class="ball" src="logo.jpg" alt="MatchScore" />
+      <h1>MatchScore</h1>
+      <p class="sub">Análise probabilística do Brasileirão Série A</p>
+      <a class="btn" href="https://github.com/ddjdanielalves-gif/matchscore/releases/latest/download/app-release.apk"
+        >Baixar APK</a
+      >
+      <ol class="steps">
+        <li>Toque em <b>Baixar APK</b> (arquivo .apk).</li>
+        <li>No celular, permita a instalação de "fontes desconhecidas".</li>
+        <li>Abra o arquivo e toque em <b>Instalar</b>.</li>
+        <li>Pronto: o app aparece na sua lista de apps.</li>
+      </ol>
+      <p class="disc">
+        As probabilidades são estimativas estatísticas. Futebol é imprevisível e
+        o resultado pode ser completamente aleatório. Não constitui recomendação
+        de aposta.
+      </p>
+    </div>
+  </body>
+</html>
