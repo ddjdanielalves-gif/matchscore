@@ -1,5 +1,4 @@
 name: Build Android APK
-
 on:
   workflow_dispatch:
   push:
@@ -45,6 +44,10 @@ jobs:
         working-directory: frontend
         env:
           CI: "true"
+
+      - name: Generate custom Android icon
+        run: npx --yes @capacitor/assets@3 generate --android --assetPath . --iconBackgroundColor '#ffffff'
+        working-directory: frontend
 
       - name: Sync web assets
         run: npx cap sync android
