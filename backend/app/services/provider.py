@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 from ..config import settings
 from ..schemas import Match, PlayerIssue, Standings
@@ -47,6 +48,19 @@ class DataService:
 
     def upcoming(self, round_no: int | None = None) -> list[Match]:
         return self._pick("upcoming", round_no)
+
+    def recent_results(self, days: int = 3) -> list[Match]:
+        """Matches finished within the last `days` days, most recent first.
+
+        Built on top of `fixtures()` (which already goes through the normal
+        primary/fallback path) instead of calling a provider-specific method
+        directly, so it works even if a given provider implementation does
+        not define its own `recent_results`.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        matches = self.fixtures()
+        results = [m for m in matches if m.status == "finished" and m.date >= cutoff]
+        return sorted(results, key=lambda m: m.date, reverse=True)
 
     def match(self, match_id: int) -> Match | None:
         return self._pick("match", match_id)
@@ -103,3 +117,4 @@ class DataService:
         self.sources_used.clear()
         self.estimates.clear()
         return sources
+                
