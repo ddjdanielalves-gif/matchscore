@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, HTTPException
 
 from ..schemas import Analysis, Match
@@ -10,6 +12,20 @@ router = APIRouter(prefix="/api")
 
 _ds = DataService()
 _engine = ProbabilityEngine(_ds)
+
+
+def _round_number(round_label: str) -> int | None:
+    """Extracts the round number from labels like 'Regular Season - 15'.
+
+    Returns None for labels with no trailing number (e.g. knockout-stage
+    rounds like 'Final' or 'Semi-finals') instead of raising, so those
+    rounds are simply excluded from numeric sorting/filtering rather than
+    crashing the endpoint.
+    """
+    if not round_label:
+        return None
+    match = re.search(r"(\d+)\s*$", round_label.strip())
+    return int(match.group(1)) if match else None
 
 
 @router.get("/info")
@@ -31,14 +47,36 @@ def info():
 @router.get("/matches")
 def matches(round: int | None = None):
     fixtures = _ds.fixtures()
-    rounds = sorted({f.round for f in fixtures if f.round}, key=lambda r: int(r.split()[-1]))
-    current = _ds.upcoming()
-    if not current:
-        current = fixtures[:10]
+
+    # Only rounds with a parseable trailing number are offered for numeric
+    # sorting/selection; knockout-stage labels (e.g. "Final") are skipped
+    # here rather than crashing the endpoint.
+    numbered_rounds = {f.round for f in fixtures if f.round and _round_number(f.round) is not None}
+    rounds = sorted(numbered_rounds, key=_round_number)
+
     if round is not None:
-        current = [m for m in current if m.round and m.round.split()[-1] == str(round)]
+        # Filter directly over the full fixtures window instead of only
+        # over `upcoming()`, so a requested round that falls outside
+        # "what's happening right now" still returns its matches (including
+        # already-finished ones) instead of an empty list.
+        current = [m for m in fixtures if _round_number(m.round) == round]
+        if not current:
+            current = [m for m in _ds.all_finished() if _round_number(m.round) == round]
+    else:
+        current = _ds.upcoming()
+        if not current:
+            current = fixtures[:10]
+
     sources = _ds.snapshot_sources()
     return {"matches": current, "rounds": rounds, "source": sources}
+
+
+@router.get("/results")
+def results(days: int = 3):
+    """Partidas finalizadas nos ultimos `days` dias (padrao: 3), mais recentes primeiro."""
+    recent = _ds.recent_results(days=days)
+    sources = _ds.snapshot_sources()
+    return {"matches": recent, "days": days, "source": sources}
 
 
 @router.get("/matches/{match_id}", response_model=Match)
@@ -68,3 +106,4 @@ def standings():
     sources = _ds.snapshot_sources()
     data.source = "api" if any(s.startswith("api") for s in sources) else "demo"
     return data
+    
