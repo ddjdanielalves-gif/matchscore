@@ -22,7 +22,10 @@ from .cache import cached
 
 logger = logging.getLogger("matchscore.api")
 
-_RATE_INTERVAL = 1.2
+# football-data.org free plan:
+# 10 requests/minute.
+_RATE_INTERVAL = 6.2
+
 _rate_lock = Lock()
 _last_call = 0.0
 
@@ -31,6 +34,7 @@ _WINDOW_DAYS_FORWARD = 10
 
 
 def _throttle() -> None:
+    """Keep requests safely below the free-plan rate limit."""
     global _last_call
 
     with _rate_lock:
@@ -42,534 +46,549 @@ def _throttle() -> None:
         _last_call = time.monotonic()
 
 
+def datetime_iso(value: str | None) -> datetime:
+    """Convert an ISO-8601 API date to an aware UTC datetime."""
+
+    if not value:
+        return datetime.now(timezone.utc)
+
+    try:
+        parsed = datetime.fromisoformat(
+            value.replace("Z", "+00:00")
+        )
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+
+        return parsed.astimezone(timezone.utc)
+
+    except (TypeError, ValueError):
+        logger.warning("Invalid API datetime: %r", value)
+        return datetime.now(timezone.utc)
+
+
 class RapidApiProvider:
-    """Provider principal usando API-Football."""
+    """
+    Compatibility provider for the MatchScore.
+
+    The old class name is intentionally preserved so provider.py
+    does not need to change.
+
+    Data source:
+        football-data.org API v4
+    """
 
     source = "api"
 
     def __init__(self) -> None:
-        self._key = settings.api_key
-        self._base = settings.api_base_url
+        self._key = settings.api_key.strip()
+        self._base = (
+            settings.api_base_url.rstrip("/")
+        )
 
-        if "rapidapi" in settings.api_host.lower():
-            self._headers = {
-                "X-RapidAPI-Key": self._key,
-                "X-RapidAPI-Host": settings.api_host,
-            }
-        else:
-            self._headers = {
-                "x-apisports-key": self._key,
-            }
+        self._headers = {
+            "X-Auth-Token": self._key,
+            "Accept": "application/json",
+            "User-Agent": "MatchScore/1.0",
+        }
+
+        self._competition = getattr(
+            settings,
+            "competition_code",
+            "BSA",
+        )
+
+        logger.info(
+            "football-data provider initialized: "
+            "competition=%s season=%s base_season=%s",
+            self._competition,
+            settings.season,
+            settings.base_season,
+        )
 
     # ============================================================
     # HTTP
     # ============================================================
 
-    def _get(self, path: str, params: dict) -> dict | None:
+    def _get(
+        self,
+        path: str,
+        params: dict | None = None,
+    ) -> dict | None:
+
         url = f"{self._base}{path}"
 
-        for attempt in range(2):
+        try:
             _throttle()
 
-            try:
-                with httpx.Client(
-                    timeout=15,
-                    headers=self._headers,
-                ) as client:
-                    logger.info(
-                        "API request: %s params=%s",
-                        path,
-                        params,
-                    )
+            logger.info(
+                "football-data request: %s params=%s",
+                path,
+                params or {},
+            )
 
-                    response = client.get(
-                        url,
-                        params=params,
-                    )
+            with httpx.Client(
+                timeout=20,
+                headers=self._headers,
+            ) as client:
 
-                    logger.info(
-                        "API response: %s status=%s",
-                        path,
-                        response.status_code,
-                    )
+                response = client.get(
+                    url,
+                    params=params or {},
+                )
 
-                    if response.status_code == 429:
-                        logger.warning(
-                            "API quota exceeded for %s",
-                            path,
-                        )
+            logger.info(
+                "football-data response: "
+                "%s status=%s",
+                path,
+                response.status_code,
+            )
 
-                        if attempt == 0:
-                            time.sleep(5)
-                            continue
-
-                        return None
-
-                    response.raise_for_status()
-
-                    data = response.json()
-
-                    errors = data.get("errors")
-
-                    if errors:
-                        logger.warning(
-                            "API errors for %s: %s",
-                            path,
-                            errors,
-                        )
-
-                    logger.info(
-                        "API results=%s response_items=%s",
-                        data.get("results"),
-                        len(data.get("response") or []),
-                    )
-
-                    return data
-
-            except Exception as exc:
-                logger.warning(
-                    "API request failed: %s params=%s error=%s",
-                    path,
-                    params,
-                    exc,
+            if response.status_code == 401:
+                logger.error(
+                    "football-data authentication failed. "
+                    "Check MATCH_API_KEY."
                 )
                 return None
 
-        return None
-
-    # ============================================================
-    # MAPPERS
-    # ============================================================
-
-    @staticmethod
-    def _short_name(name: str) -> str:
-        norm = unicodedata.normalize("NFD", name)
-
-        plain = "".join(
-            c for c in norm
-            if not unicodedata.combining(c)
-        )
-
-        first = plain.split("-")[0].split()[0]
-
-        return first[:3].upper() if first else "???"
-
-    @staticmethod
-    def _team(t: dict) -> TeamRef:
-        name = t.get("name", "?")
-
-        return TeamRef(
-            id=int(t.get("id", 0)),
-            name=name,
-            short_name=(
-                t.get("code")
-                or RapidApiProvider._short_name(name)
-            ),
-            crest=t.get("logo", ""),
-        )
-
-    @staticmethod
-    def _status(short: str) -> str:
-        if short in {"NS", "TBD", "SUS"}:
-            return "scheduled"
-
-        if short in {
-            "1H",
-            "2H",
-            "HT",
-            "ET",
-            "BT",
-            "P",
-            "INT",
-        }:
-            return "in_play"
-
-        if short in {"FT", "AET", "PEN"}:
-            return "finished"
-
-        if short in {"PST", "CANC"}:
-            return "postponed"
-
-        return "scheduled"
-
-    def _fixture_to_match(self, f: dict) -> Match:
-        fixture = f.get("fixture") or {}
-        teams = f.get("teams") or {}
-        goals = f.get("goals") or {}
-
-        home_goals = goals.get("home")
-        away_goals = goals.get("away")
-
-        return Match(
-            id=int(fixture.get("id", 0)),
-            round=(f.get("league") or {}).get("round", ""),
-            date=datetime_iso(fixture.get("date")),
-            status=self._status(
-                (fixture.get("status") or {}).get(
-                    "short",
-                    "",
+            if response.status_code == 403:
+                logger.error(
+                    "football-data access denied. "
+                    "The competition/season may not be "
+                    "available on the current plan."
                 )
-            ),
-            home=self._team(
-                teams.get("home") or {}
-            ),
-            away=self._team(
-                teams.get("away") or {}
-            ),
-            score=Score(
-                home=(
-                    int(home_goals)
-                    if home_goals is not None
-                    else None
-                ),
-                away=(
-                    int(away_goals)
-                    if away_goals is not None
-                    else None
-                ),
-            ),
-            source="api",
-        )
+                return None
+
+            if response.status_code == 404:
+                logger.warning(
+                    "football-data resource not found: %s",
+                    path,
+                )
+                return None
+
+            if response.status_code == 429:
+                logger.warning(
+                    "football-data rate limit reached."
+                )
+
+                # Do not make several immediate retries.
+                # The service will fall back to cache/mock.
+                return None
+
+            response.raise_for_status()
+
+            data = response.json()
+
+            if not isinstance(data, dict):
+                logger.warning(
+                    "Unexpected API response type: %s",
+                    type(data),
+                )
+                return None
+
+            return data
+
+        except httpx.TimeoutException as exc:
+            logger.warning(
+                "football-data timeout: %s",
+                exc,
+            )
+            return None
+
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "football-data HTTP error: %s",
+                exc,
+            )
+            return None
+
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Unexpected football-data error: %s",
+                exc,
+            )
+            return None
 
     # ============================================================
     # HELPERS
     # ============================================================
 
     @staticmethod
-    def _is_target_league(f: dict) -> bool:
-        league = f.get("league") or {}
+    def _short_name(name: str) -> str:
+        if not name:
+            return "???"
 
-        try:
-            league_id = int(league.get("id", 0))
-        except (TypeError, ValueError):
-            return False
+        norm = unicodedata.normalize(
+            "NFD",
+            name,
+        )
 
-        return league_id == settings.league_id
+        plain = "".join(
+            char
+            for char in norm
+            if not unicodedata.combining(char)
+        )
+
+        words = plain.replace("-", " ").split()
+
+        if not words:
+            return "???"
+
+        return words[0][:3].upper()
 
     @staticmethod
-    def _round_number(round_label: str) -> int | None:
-        if not round_label:
-            return None
+    def _team(team: dict) -> TeamRef:
+        team_id = team.get("id", 0)
 
-        match = re.search(
-            r"(\d+)\s*$",
-            round_label.strip(),
+        try:
+            team_id = int(team_id)
+        except (TypeError, ValueError):
+            team_id = 0
+
+        name = (
+            team.get("name")
+            or team.get("shortName")
+            or "?"
         )
 
-        return int(match.group(1)) if match else None
+        short_name = (
+            team.get("tla")
+            or team.get("shortName")
+            or RapidApiProvider._short_name(name)
+        )
+
+        return TeamRef(
+            id=team_id,
+            name=name,
+            short_name=short_name,
+            crest=team.get("crest") or "",
+        )
+
+    @staticmethod
+    def _status(status: str | None) -> str:
+        value = (status or "").upper()
+
+        if value in {
+            "IN_PLAY",
+            "PAUSED",
+            "LIVE",
+            "POSTPONED",
+        }:
+            if value == "POSTPONED":
+                return "postponed"
+
+            return "in_play"
+
+        if value in {
+            "FINISHED",
+        }:
+            return "finished"
+
+        if value in {
+            "CANCELLED",
+            "SUSPENDED",
+        }:
+            return "postponed"
+
+        if value in {
+            "TIMED",
+            "SCHEDULED",
+            "AWAITING_PENALTIES",
+            "AWAITING_EXTRA_TIME",
+        }:
+            return "scheduled"
+
+        return "scheduled"
+
+    @staticmethod
+    def _round_label(match: dict) -> str:
+        matchday = match.get("matchday")
+
+        if matchday is not None:
+            try:
+                return f"Rodada {int(matchday)}"
+            except (TypeError, ValueError):
+                pass
+
+        return (
+            match.get("stage")
+            or ""
+        )
+
+    @staticmethod
+    def _is_finished(match: dict) -> bool:
+        return (
+            str(match.get("status", "")).upper()
+            == "FINISHED"
+        )
+
+    @staticmethod
+    def _extract_score(match: dict) -> tuple[int | None, int | None]:
+        score = match.get("score") or {}
+
+        # football-data provides:
+        # score.fullTime.home
+        # score.fullTime.away
+        full_time = score.get("fullTime") or {}
+
+        home = full_time.get("home")
+        away = full_time.get("away")
+
+        if home is None:
+            home = score.get("home")
+
+        if away is None:
+            away = score.get("away")
+
+        try:
+            home = int(home) if home is not None else None
+        except (TypeError, ValueError):
+            home = None
+
+        try:
+            away = int(away) if away is not None else None
+        except (TypeError, ValueError):
+            away = None
+
+        return home, away
+
+    def _match_to_model(self, match: dict) -> Match:
+        home_goals, away_goals = self._extract_score(
+            match
+        )
+
+        return Match(
+            id=int(match.get("id", 0)),
+            round=self._round_label(match),
+            date=datetime_iso(
+                match.get("utcDate")
+            ),
+            status=self._status(
+                match.get("status")
+            ),
+            home=self._team(
+                match.get("homeTeam") or {}
+            ),
+            away=self._team(
+                match.get("awayTeam") or {}
+            ),
+            score=Score(
+                home=home_goals,
+                away=away_goals,
+            ),
+            source="api",
+        )
 
     # ============================================================
-    # RODADAS
+    # COMPETITION
     # ============================================================
 
-    def _fetch_rounds(self) -> list[str]:
-        """
-        Obtém todas as rodadas disponíveis da temporada atual.
-        """
-
-        params = {
-            "league": settings.league_id,
-            "season": settings.season,
-        }
-
-        data = cached(12 * 3600)(
-            lambda _k: self._get(
-                "/fixtures/rounds",
-                params,
-            )
-        )(
-            f"rounds:{settings.league_id}:{settings.season}"
-        )
-
-        if not data:
-            return []
-
-        rounds = data.get("response") or []
-
-        rounds = [
-            str(r)
-            for r in rounds
-            if r
-        ]
-
-        logger.info(
-            "Available rounds for league=%s season=%s: %s",
-            settings.league_id,
-            settings.season,
-            rounds,
-        )
-
-        return rounds
-
-    def _fetch_current_round(self) -> str | None:
-        """
-        Obtém diretamente a rodada atual.
-        """
-
-        params = {
-            "league": settings.league_id,
-            "season": settings.season,
-            "current": "true",
-        }
-
-        data = cached(60 * 60)(
-            lambda _k: self._get(
-                "/fixtures/rounds",
-                params,
-            )
-        )(
-            f"current-round:{settings.league_id}:{settings.season}"
-        )
-
-        if not data:
-            return None
-
-        rounds = data.get("response") or []
-
-        if not rounds:
-            return None
-
-        current = str(rounds[0])
-
-        logger.info(
-            "Current round detected: %s",
-            current,
-        )
-
-        return current
-
-    def _fetch_round_fixtures(
+    def _competition_info(
         self,
-        round_label: str,
-    ) -> list[dict]:
-        """
-        Busca somente os jogos da rodada especificada.
-        """
+        season: int | None = None,
+    ) -> dict | None:
 
-        params = {
-            "league": settings.league_id,
-            "season": settings.season,
-            "round": round_label,
-        }
+        params = {}
+
+        if season is not None:
+            params["season"] = season
+
+        key = (
+            f"competition:"
+            f"{self._competition}:"
+            f"{season or 'current'}"
+        )
+
+        return cached(6 * 3600)(
+            lambda _key: self._get(
+                f"/competitions/{self._competition}",
+                params,
+            )
+        )(key)
+
+    def _current_matchday(self) -> int | None:
+        data = self._competition_info(
+            settings.season
+        )
+
+        if not data:
+            return None
+
+        season = data.get("currentSeason") or {}
+
+        value = season.get("currentMatchday")
+
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    # ============================================================
+    # MATCHES
+    # ============================================================
+
+    def _fetch_matches(
+        self,
+        *,
+        season: int | None = None,
+        matchday: int | None = None,
+        status: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> list[dict]:
+
+        params: dict[str, str | int] = {}
+
+        if season is not None:
+            params["season"] = season
+
+        if matchday is not None:
+            params["matchday"] = matchday
+
+        if status:
+            params["status"] = status
+
+        if date_from:
+            params["dateFrom"] = date_from
+
+        if date_to:
+            params["dateTo"] = date_to
+
+        cache_key = (
+            f"matches:"
+            f"{self._competition}:"
+            f"{season or 'current'}:"
+            f"{matchday or ''}:"
+            f"{status or ''}:"
+            f"{date_from or ''}:"
+            f"{date_to or ''}"
+        )
 
         data = cached(15 * 60)(
-            lambda _k: self._get(
-                "/fixtures",
+            lambda _key: self._get(
+                f"/competitions/"
+                f"{self._competition}/matches",
                 params,
             )
-        )(
-            f"round-fixtures:"
-            f"{settings.league_id}:"
-            f"{settings.season}:"
-            f"{round_label}"
-        )
+        )(cache_key)
 
         if not data:
             return []
 
-        response = data.get("response") or []
+        matches = data.get("matches") or []
 
-        fixtures = [
-            f
-            for f in response
-            if self._is_target_league(f)
-        ]
+        if not isinstance(matches, list):
+            return []
 
-        logger.info(
-            "Round %s: %d fixtures returned, %d valid",
-            round_label,
-            len(response),
-            len(fixtures),
+        return matches
+
+    # ============================================================
+    # FIXTURES
+    # ============================================================
+
+    def fixtures(self) -> list[Match]:
+        """
+        Returns matches from the current matchday.
+
+        If current matchday cannot be determined, uses a
+        small date window as fallback.
+        """
+
+        current = self._current_matchday()
+
+        if current is not None:
+            matches = self._fetch_matches(
+                season=settings.season,
+                matchday=current,
+            )
+
+            if matches:
+                result = [
+                    self._match_to_model(m)
+                    for m in matches
+                ]
+
+                result.sort(
+                    key=lambda item: item.date
+                )
+
+                logger.info(
+                    "fixtures(): %d matches "
+                    "from matchday %s",
+                    len(result),
+                    current,
+                )
+
+                return result
+
+        logger.warning(
+            "Could not determine current "
+            "matchday. Using date fallback."
         )
 
-        return fixtures
+        raw = self._fetch_window()
 
-    # ============================================================
-    # FALLBACK POR PERÍODO
-    # ============================================================
-
-    def _window_dates(self) -> list[str]:
-        today = date.today()
-
-        return [
-            (
-                today + timedelta(days=d)
-            ).isoformat()
-            for d in range(
-                -_WINDOW_DAYS_BACK,
-                _WINDOW_DAYS_FORWARD + 1,
-            )
+        result = [
+            self._match_to_model(m)
+            for m in raw
         ]
 
-    def _fetch_window(self) -> list[dict]:
-        """
-        Fallback caso a consulta por rodada não retorne dados.
-        Cada chamada já é restrita à Série A e temporada.
-        """
-
-        seen: dict[int, dict] = {}
-
-        for day in self._window_dates():
-
-            params = {
-                "league": settings.league_id,
-                "season": settings.season,
-                "date": day,
-            }
-
-            data = cached(15 * 60)(
-                lambda _k, p=params: self._get(
-                    "/fixtures",
-                    p,
-                )
-            )(
-                f"window:"
-                f"{settings.league_id}:"
-                f"{settings.season}:"
-                f"{day}"
-            )
-
-            if not data:
-                continue
-
-            response = data.get("response") or []
-
-            logger.info(
-                "Date %s: %d fixtures",
-                day,
-                len(response),
-            )
-
-            for fixture in response:
-                if not self._is_target_league(fixture):
-                    continue
-
-                fixture_id = int(
-                    (fixture.get("fixture") or {}).get(
-                        "id",
-                        0,
-                    )
-                )
-
-                if fixture_id > 0:
-                    seen[fixture_id] = fixture
-
-        result = list(seen.values())
-
-        logger.info(
-            "Window total: %d valid fixtures",
-            len(result),
+        result.sort(
+            key=lambda item: item.date
         )
 
         return result
 
     # ============================================================
-    # FIXTURES PRINCIPAIS
+    # DATE WINDOW
     # ============================================================
 
-    def fixtures(self) -> list[Match]:
-        """
-        Retorna os jogos da rodada atual.
+    def _window_dates(self) -> tuple[str, str]:
+        today = date.today()
 
-        Primeiro:
-            /fixtures/rounds?current=true
+        first = (
+            today
+            - timedelta(days=_WINDOW_DAYS_BACK)
+        ).isoformat()
 
-        Depois:
-            /fixtures?league=71&season=2026&round=...
+        last = (
+            today
+            + timedelta(days=_WINDOW_DAYS_FORWARD)
+        ).isoformat()
 
-        Se isso falhar:
-            busca por datas como fallback.
-        """
+        return first, last
 
-        current_round = self._fetch_current_round()
+    def _fetch_window(self) -> list[dict]:
+        date_from, date_to = self._window_dates()
 
-        if current_round:
-            fixtures = self._fetch_round_fixtures(
-                current_round
-            )
-
-            if fixtures:
-                matches = [
-                    self._fixture_to_match(f)
-                    for f in fixtures
-                ]
-
-                matches.sort(
-                    key=lambda m: m.date
-                )
-
-                logger.info(
-                    "fixtures(): %d matches from round %s",
-                    len(matches),
-                    current_round,
-                )
-
-                return matches
-
-        logger.warning(
-            "Current-round lookup failed. "
-            "Using date-window fallback."
+        return self._fetch_matches(
+            season=settings.season,
+            date_from=date_from,
+            date_to=date_to,
         )
-
-        fixtures = self._fetch_window()
-
-        matches = [
-            self._fixture_to_match(f)
-            for f in fixtures
-        ]
-
-        matches.sort(
-            key=lambda m: m.date
-        )
-
-        return matches
 
     # ============================================================
-    # TODOS OS FINALIZADOS DA TEMPORADA BASE
+    # ALL FINISHED
     # ============================================================
-
-    def _fetch_base_season(self) -> list[dict]:
-        params = {
-            "league": settings.league_id,
-            "season": settings.base_season,
-        }
-
-        data = cached(12 * 3600)(
-            lambda _k: self._get(
-                "/fixtures",
-                params,
-            )
-        )(
-            f"fixtures:"
-            f"{settings.league_id}:"
-            f"{settings.base_season}"
-        )
-
-        if not data:
-            return []
-
-        return data.get("response") or []
 
     def all_finished(self) -> list[Match]:
-        fixtures = self._fetch_base_season()
+        raw = self._fetch_matches(
+            season=settings.base_season,
+            status="FINISHED",
+        )
 
-        matches = [
-            self._fixture_to_match(f)
-            for f in fixtures
-            if (
-                (f.get("fixture") or {})
-                .get("status", {})
-                .get("short")
-                in {"FT", "AET", "PEN"}
-            )
+        result = [
+            self._match_to_model(m)
+            for m in raw
+            if self._is_finished(m)
         ]
 
-        matches.sort(
-            key=lambda m: m.date,
+        result.sort(
+            key=lambda item: item.date,
             reverse=True,
         )
 
-        return matches
+        return result
 
     # ============================================================
     # UPCOMING
@@ -581,105 +600,43 @@ class RapidApiProvider:
     ) -> list[Match]:
 
         if round_no is not None:
-
-            # Descobre o nome oficial da rodada.
-            rounds = self._fetch_rounds()
-
-            target_round = next(
-                (
-                    r
-                    for r in rounds
-                    if self._round_number(r) == round_no
-                ),
-                None,
+            raw = self._fetch_matches(
+                season=settings.season,
+                matchday=round_no,
             )
+        else:
+            current = self._current_matchday()
 
-            if target_round:
-                fixtures = self._fetch_round_fixtures(
-                    target_round
+            if current is not None:
+                raw = self._fetch_matches(
+                    season=settings.season,
+                    matchday=current,
                 )
+            else:
+                raw = self._fetch_window()
 
-                matches = [
-                    self._fixture_to_match(f)
-                    for f in fixtures
-                    if self._status(
-                        (
-                            f.get("fixture") or {}
-                        )
-                        .get("status", {})
-                        .get("short", "")
-                    )
-                    != "finished"
-                ]
-
-                matches.sort(
-                    key=lambda m: m.date
-                )
-
-                if matches:
-                    return matches
-
-        # Sem rodada específica:
-        current_round = self._fetch_current_round()
-
-        if current_round:
-            fixtures = self._fetch_round_fixtures(
-                current_round
-            )
-
-            if fixtures:
-                matches = [
-                    self._fixture_to_match(f)
-                    for f in fixtures
-                    if self._status(
-                        (
-                            f.get("fixture") or {}
-                        )
-                        .get("status", {})
-                        .get("short", "")
-                    )
-                    != "finished"
-                ]
-
-                matches.sort(
-                    key=lambda m: m.date
-                )
-
-                if matches:
-                    return matches
-
-        # Fallback.
-        fixtures = self._fetch_window()
-
-        matches = [
-            self._fixture_to_match(f)
-            for f in fixtures
-            if self._status(
-                (
-                    f.get("fixture") or {}
-                )
-                .get("status", {})
-                .get("short", "")
-            )
-            != "finished"
+        result = [
+            self._match_to_model(m)
+            for m in raw
+            if not self._is_finished(m)
         ]
 
         if round_no is not None:
-            matches = [
+            result = [
                 m
-                for m in matches
+                for m in result
                 if self._round_number(m.round)
                 == round_no
             ]
 
-        matches.sort(
-            key=lambda m: m.date
+        result.sort(
+            key=lambda item: item.date
         )
 
-        return matches
+        return result
 
     # ============================================================
-    # RESULTADOS RECENTES
+    # RECENT RESULTS
     # ============================================================
 
     def recent_results(
@@ -687,40 +644,37 @@ class RapidApiProvider:
         days: int = 3,
     ) -> list[Match]:
 
-        cutoff = (
-            datetime.now(timezone.utc)
+        today = date.today()
+
+        date_from = (
+            today
             - timedelta(days=days)
+        ).isoformat()
+
+        date_to = today.isoformat()
+
+        raw = self._fetch_matches(
+            season=settings.season,
+            status="FINISHED",
+            date_from=date_from,
+            date_to=date_to,
         )
 
-        fixtures = self._fetch_window()
-
-        matches = [
-            self._fixture_to_match(f)
-            for f in fixtures
-            if self._status(
-                (
-                    f.get("fixture") or {}
-                )
-                .get("status", {})
-                .get("short", "")
-            )
-            == "finished"
+        result = [
+            self._match_to_model(m)
+            for m in raw
+            if self._is_finished(m)
         ]
 
-        matches = [
-            m
-            for m in matches
-            if m.date >= cutoff
-        ]
-
-        return sorted(
-            matches,
-            key=lambda m: m.date,
+        result.sort(
+            key=lambda item: item.date,
             reverse=True,
         )
 
+        return result
+
     # ============================================================
-    # PARTIDA
+    # SINGLE MATCH
     # ============================================================
 
     def match(
@@ -728,88 +682,230 @@ class RapidApiProvider:
         match_id: int,
     ) -> Match | None:
 
-        data = cached(15 * 60)(
-            lambda _k: self._get(
-                "/fixtures",
-                {"id": match_id},
+        data = cached(5 * 60)(
+            lambda _key: self._get(
+                f"/matches/{match_id}",
             )
         )(
             f"match:{match_id}"
         )
 
-        if (
-            not data
-            or not data.get("response")
-        ):
+        if not data:
             return None
 
-        fixture = data["response"][0]
-
-        if not self._is_target_league(
-            fixture
-        ):
+        try:
+            return self._match_to_model(data)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Could not map match %s: %s",
+                match_id,
+                exc,
+            )
             return None
-
-        return self._fixture_to_match(
-            fixture
-        )
 
     # ============================================================
     # STANDINGS
     # ============================================================
 
     def standings(self) -> Standings | None:
+        """
+        Returns the official TOTAL standings.
 
-        data = cached(12 * 3600)(
-            lambda _k: self._get(
-                "/standings",
+        football-data.org returns TOTAL, HOME and AWAY
+        standings. MatchScore uses TOTAL.
+        """
+
+        data = cached(30 * 60)(
+            lambda _key: self._get(
+                f"/competitions/"
+                f"{self._competition}/standings",
                 {
-                    "league": settings.league_id,
-                    "season": settings.base_season,
+                    "season": settings.season,
                 },
             )
         )(
             f"standings:"
-            f"{settings.league_id}:"
-            f"{settings.base_season}"
+            f"{self._competition}:"
+            f"{settings.season}"
         )
 
-        if (
-            not data
-            or not data.get("response")
-        ):
+        if not data:
             return None
 
-        table = (
-            data["response"][0]
-            .get("league", {})
-            .get("standings", [[]])[0]
+        standings = data.get("standings") or []
+
+        total = next(
+            (
+                item
+                for item in standings
+                if item.get("type") == "TOTAL"
+            ),
+            None,
         )
+
+        if not total:
+            logger.warning(
+                "TOTAL standings not found."
+            )
+            return None
+
+        table = total.get("table") or []
 
         rows: list[StandingsEntry] = []
 
         for row in table:
+            team_data = row.get("team") or {}
 
-            all_games = row.get("all") or {}
+            try:
+                position = int(
+                    row.get("position", 0)
+                )
+            except (TypeError, ValueError):
+                position = 0
+
+            try:
+                games = int(
+                    row.get("playedGames", 0)
+                )
+            except (TypeError, ValueError):
+                games = 0
+
+            try:
+                wins = int(
+                    row.get("won", 0)
+                )
+            except (TypeError, ValueError):
+                wins = 0
+
+            try:
+                draws = int(
+                    row.get("draw", 0)
+                )
+            except (TypeError, ValueError):
+                draws = 0
+
+            try:
+                losses = int(
+                    row.get("lost", 0)
+                )
+            except (TypeError, ValueError):
+                losses = 0
+
+            try:
+                goals_for = int(
+                    row.get("goalsFor", 0)
+                )
+            except (TypeError, ValueError):
+                goals_for = 0
+
+            try:
+                goals_against = int(
+                    row.get("goalsAgainst", 0)
+                )
+            except (TypeError, ValueError):
+                goals_against = 0
+
+            try:
+                goal_difference = int(
+                    row.get("goalDifference", 0)
+                )
+            except (TypeError, ValueError):
+                goal_difference = 0
+
+            try:
+                points = int(
+                    row.get("points", 0)
+                )
+            except (TypeError, ValueError):
+                points = 0
 
             rows.append(
                 StandingsEntry(
-                    position=int(
-                        row.get("rank", 0)
-                    ),
-                    team=self._team(
-                        row.get("team") or {}
-                    ),
-                    games=int(
-                        all_games.get(
-                            "played",
-                            0,
-                        )
-                    ),
-                    wins=int(
-                        all_games.get(
-                            "win",
-                            0,
-                        )
-                    ),
-                    
+                    position=position,
+                    team=self._team(team_data),
+                    games=games,
+                    wins=wins,
+                    draws=draws,
+                    losses=losses,
+                    goals_for=goals_for,
+                    goals_against=goals_against,
+                    goal_difference=goal_difference,
+                    points=points,
+                )
+            )
+
+        return Standings(
+            entries=rows
+        )
+
+    # ============================================================
+    # PREDICTIONS
+    # ============================================================
+
+    def predictions(
+        self,
+        match_id: int,
+    ) -> dict | None:
+        """
+        football-data.org does not provide an equivalent
+        prediction endpoint.
+
+        MatchScore's own prediction/model layer can continue
+        to calculate predictions from available match data.
+        """
+
+        return None
+
+    # ============================================================
+    # INJURIES / SUSPENSIONS
+    # ============================================================
+
+    def team_issues(
+        self,
+        team_id: int,
+    ) -> tuple[
+        list[PlayerIssue],
+        list[PlayerIssue],
+    ]:
+
+        # football-data.org does not expose the API-Football
+        # injuries/suspensions endpoint used previously.
+
+        return [], []
+
+    # ============================================================
+    # CARDS
+    # ============================================================
+
+    def team_cards(
+        self,
+        team_id: int,
+    ) -> tuple[float, float]:
+
+        # No equivalent reliable team-card endpoint is used
+        # here. Return neutral values rather than inventing data.
+
+        return 2.0, 0.1
+
+    # ============================================================
+    # ROUND NUMBER
+    # ============================================================
+
+    @staticmethod
+    def _round_number(
+        round_label: str,
+    ) -> int | None:
+
+        if not round_label:
+            return None
+
+        found = re.search(
+            r"(\d+)\s*$",
+            round_label.strip(),
+        )
+
+        return (
+            int(found.group(1))
+            if found
+            else None
+        )
