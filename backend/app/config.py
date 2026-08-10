@@ -16,37 +16,61 @@ class Settings(BaseSettings):
     app_name: str = "MatchScore API"
     version: str = "0.1.0"
 
-    # api-football. Supports both the direct API (v3.football.api-sports.io,
-    # header x-apisports-key) and the legacy RapidAPI host (api-football-v1.
-    # p.rapidapi.com, header X-RapidAPI-Key). The host auto-selects the auth.
-    # Empty key -> the app runs fully in demo mode (responses flagged as demo).
-    api_key: str = ""
-    api_host: str = "v3.football.api-sports.io"
-    api_base_url: str = "https://v3.football.api-sports.io"
-    league_id: int = 71  # Campeonato Brasileiro Serie A
-    season: int = 2026
-    # On the free plan, current-season league queries are blocked (only
-    # seasons 2022-2024 are accessible). base_season feeds the strength
-    # model (ELO/form/attack/defense) with the most recent real season.
-    base_season: int = 2024
+    # ============================================================
+    # FOOTBALL-DATA.ORG
+    # ============================================================
 
-    # Force demo mode even when an API key is present.
+    # No Render:
+    # MATCH_API_KEY = seu token do football-data.org
+    api_key: str = ""
+
+    # API v4
+    api_host: str = "api.football-data.org"
+    api_base_url: str = "https://api.football-data.org/v4"
+
+    # Código da competição.
+    # Série A do Brasil = BSA
+    competition_code: str = "BSA"
+
+    # Mantido para compatibilidade com o restante do projeto.
+    # Não é mais usado como league ID da API-Football.
+    league_id: int = 2013
+
+    # Temporada atual.
+    season: int = 2026
+
+    # Temporada-base usada pelo modelo quando necessário.
+    base_season: int = 2025
+
+    # Force demo mode mesmo com API key.
     mock_mode: bool = False
 
-    # Cache TTL (seconds) for raw provider data.
+    # Cache TTL.
     cache_ttl_seconds: int = 1800
 
-    # CORS origins for the web frontend and the Capacitor (Android) app.
+    # CORS.
     cors_origins: str = (
-        "http://localhost:5173,http://127.0.0.1:5173,"
-        "http://localhost:5174,http://127.0.0.1:5174,"
-        "https://localhost,http://localhost,capacitor://localhost"
+        "http://localhost:5173,"
+        "http://127.0.0.1:5173,"
+        "http://localhost:5174,"
+        "http://127.0.0.1:5174,"
+        "https://localhost,"
+        "http://localhost,"
+        "capacitor://localhost"
     )
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        return [
+            o.strip()
+            for o in self.cors_origins.split(",")
+            if o.strip()
+        ]
 
 
 settings = Settings()
-settings.mock_mode = settings.mock_mode or os.environ.get("MATCH_MOCK", "") == "1"
+
+settings.mock_mode = (
+    settings.mock_mode
+    or os.environ.get("MATCH_MOCK", "") == "1"
+)
