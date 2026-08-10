@@ -25,6 +25,20 @@ _RATE_INTERVAL = 1.2  # seconds between calls (free tier throttles per minute)
 _rate_lock = Lock()
 _last_call = 0.0
 
+# How far back/forward the "current window" search covers. Widened from the
+# original 3-day window (-1, 0, +1) so that a full round of matches -
+# including recently finished ones and upcoming ones further out - is
+# actually inside the searched range instead of falling outside it.
+#
+# Each day in the window is a separate throttled HTTP call (_RATE_INTERVAL
+# apart), so the *uncached* worst case takes roughly
+# (back + forward + 1) * _RATE_INTERVAL seconds. Kept at 11 days (~13s worst
+# case) to stay comfortably under typical proxy/platform timeouts (e.g.
+# Render free tier); a 22-day window (~26s) risks a timeout on the very
+# first, uncached request of the day.
+_WINDOW_DAYS_BACK = 3
+_WINDOW_DAYS_FORWARD = 7
+
 
 def _throttle() -> None:
     """Sleep so api-football free tier does not return 429."""
@@ -42,7 +56,7 @@ class RapidApiProvider:
     Free-plan restrictions we work around:
       * /fixtures?league&season (current season) -> blocked, only 2022-2024
         allowed. We pull finished strength data from `base_season` (2024) and
-        current fixtures from the 3-day ?date= window.
+        current fixtures from the day-by-day ?date= window below.
       * /predictions?fixture -> works and returns real current percentages.
       * /players/injuries, /lineups, /teams/statistics -> blocked, so those
         degrade to honest estimates (None) and the UI flags them.
@@ -125,7 +139,8 @@ class RapidApiProvider:
     # ----------------------------------------------------------- data
     def _window_dates(self) -> list[str]:
         today = date.today()
-        return [(today + timedelta(days=d)).isoformat() for d in (-1, 0, 1)]
+        span = range(-_WINDOW_DAYS_BACK, _WINDOW_DAYS_FORWARD + 1)
+        return [(today + timedelta(days=d)).isoformat() for d in span]
 
     def _fetch_window(self) -> list[dict]:
         seen: dict[int, dict] = {}
@@ -155,12 +170,33 @@ class RapidApiProvider:
         return [self._fixture_to_match(f) for f in self._fetch_base_season()
                 if f.get("fixture", {}).get("status", {}).get("short") in {"FT", "AET", "PEN"}]
 
+    @staticmethod
+    def _round_number(round_label: str) -> int | None:
+        """Extracts the round number from labels like 'Regular Season - 15'.
+        Returns None (instead of raising) for labels with no trailing
+        number, e.g. knockout-stage rounds like 'Final'."""
+        if not round_label:
+            return None
+        import re
+        match = re.search(r"(\d+)\s*$", round_label.strip())
+        return int(match.group(1)) if match else None
+
     def upcoming(self, round_no: int | None = None) -> list[Match]:
         matches = [self._fixture_to_match(f) for f in self._fetch_window()
                    if self._status(f.get("fixture", {}).get("status", {}).get("short", "")) != "finished"]
         if round_no:
-            matches = [m for m in matches if m.round and f"Rodada {round_no}" in m.round]
+            matches = [m for m in matches if self._round_number(m.round) == round_no]
         return matches
+
+    def recent_results(self, days: int = 3) -> list[Match]:
+        """Matches finished within the last `days` days, most recent first."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        matches = [
+            self._fixture_to_match(f) for f in self._fetch_window()
+            if self._status(f.get("fixture", {}).get("status", {}).get("short", "")) == "finished"
+        ]
+        matches = [m for m in matches if m.date >= cutoff]
+        return sorted(matches, key=lambda m: m.date, reverse=True)
 
     def match(self, match_id: int) -> Match | None:
         data = cached(15 * 60)(lambda _k, fid=match_id: self._get("/fixtures", {"id": fid}))(f"match:{match_id}")
