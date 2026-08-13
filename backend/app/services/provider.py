@@ -52,11 +52,20 @@ class DataService:
     def recent_results(self, days: int = 3) -> list[Match]:
         """Matches finished within the last `days` days, most recent first.
 
-        Built on top of `fixtures()` (which already goes through the normal
-        primary/fallback path) instead of calling a provider-specific method
-        directly, so it works even if a given provider implementation does
-        not define its own `recent_results`.
+        Prefers the provider's own date-window implementation when available;
+        otherwise falls back to filtering the fixtures window (which already
+        goes through the normal primary/fallback path).
         """
+        provider_method = getattr(self.primary, "recent_results", None)
+        if callable(provider_method):
+            try:
+                value = provider_method(days)
+                if value:
+                    self.sources_used.add(self.primary.source)
+                    return value
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("recent_results unavailable: %s", exc)
+
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         matches = self.fixtures()
 
