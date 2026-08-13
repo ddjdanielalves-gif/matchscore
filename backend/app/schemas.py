@@ -64,6 +64,10 @@ class Analysis(BaseModel):
     match: Match
     probabilities: dict[str, float]  # home_win / draw / away_win
     expected_goals: dict[str, float]  # home / away
+    # Goal totals: over/under 0.5-3.5 and BTTS (both teams to score), as %.
+    goals: dict[str, float] = Field(default_factory=dict)
+    # Most likely final scoreline from the Poisson model.
+    likely_score: dict[str, str | float] = Field(default_factory=dict)
     home: TeamContext
     away: TeamContext
     factors: list[FactorContribution] = Field(default_factory=list)
@@ -89,6 +93,7 @@ class StandingsEntry(BaseModel):
     losses: int = 0
     goals_for: int = 0
     goals_against: int = 0
+    goal_difference: int = 0
     points: int = 0
     form: list[str] = Field(default_factory=list)
 

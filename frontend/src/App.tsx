@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react"
-import { fetchAnalysis, fetchMatches, fetchStandings } from "./api"
+import { fetchAnalysis, fetchMatches, fetchResults, fetchStandings } from "./api"
 import type { Analysis, Match, Standings } from "./types"
 import Disclaimer from "./components/Disclaimer"
 import MatchCard from "./components/MatchCard"
@@ -18,6 +18,7 @@ export default function App() {
   const [rounds, setRounds] = useState<string[]>([])
   const [round, setRound] = useState<string | null>(null)
   const [matches, setMatches] = useState<Match[]>([])
+  const [results, setResults] = useState<Match[]>([])
   const [sources, setSources] = useState<string[]>([])
   const [selected, setSelected] = useState<Match | null>(null)
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
@@ -33,13 +34,8 @@ export default function App() {
         roundLabel ? roundNumber(roundLabel) : undefined,
       )
       setRounds(data.rounds)
-      setSources(data.source)
+      setSources((prev) => [...prev, ...data.source])
       setMatches(data.matches)
-      if (!roundLabel && data.matches.length > 0) {
-        setRound(data.matches[0].round)
-        await loadMatches(data.matches[0].round)
-        return
-      }
     } catch (e) {
       setError("Não foi possível carregar os jogos.")
       console.error(e)
@@ -48,9 +44,20 @@ export default function App() {
     }
   }, [])
 
+  const loadResults = useCallback(async () => {
+    try {
+      const data = await fetchResults(3)
+      setResults(data.matches)
+      setSources((prev) => [...prev, ...data.source])
+    } catch (e) {
+      console.error("Não foi possível carregar os resultados recentes.", e)
+    }
+  }, [])
+
   useEffect(() => {
     void loadMatches(null)
-  }, [loadMatches])
+    void loadResults()
+  }, [loadMatches, loadResults])
 
   const loadStandings = useCallback(async () => {
     if (standings) return
@@ -86,6 +93,10 @@ export default function App() {
     setTab(t)
     if (t === "tabela") void loadStandings()
   }, [loadStandings])
+
+  const upcoming = matches
+    .filter((m) => m.status !== "finished")
+    .sort((a, b) => a.date.localeCompare(b.date))
 
   return (
     <div className="app">
@@ -128,6 +139,16 @@ export default function App() {
             </div>
             {rounds.length > 0 && (
               <div className="round-picker">
+                <button
+                  type="button"
+                  className={`round-chip ${round === null ? "round-chip-active" : ""}`}
+                  onClick={() => {
+                    setRound(null)
+                    void loadMatches(null)
+                  }}
+                >
+                  Todos
+                </button>
                 {rounds.map((r) => (
                   <button
                     key={r}
@@ -146,19 +167,43 @@ export default function App() {
             {loading ? (
               <div className="loading">Carregando jogos…</div>
             ) : (
-              <div className="match-grid">
-                {matches.map((m) => (
-                  <MatchCard
-                    key={m.id}
-                    match={m}
-                    selected={false}
-                    onSelect={() => void openMatch(m)}
-                  />
-                ))}
-                {matches.length === 0 && (
-                  <div className="loading">Nenhum jogo nesta rodada.</div>
+              <>
+                {upcoming.length > 0 && (
+                  <div className="list-section">
+                    <h3 className="section-title">Próximos jogos</h3>
+                    <div className="match-grid">
+                      {upcoming.map((m) => (
+                        <MatchCard
+                          key={m.id}
+                          match={m}
+                          selected={false}
+                          onSelect={() => void openMatch(m)}
+                        />
+                      ))}
+                    </div>
+                  </div>
                 )}
-              </div>
+                {results.length > 0 && (
+                  <div className="list-section">
+                    <h3 className="section-title">
+                      Resultados recentes (últimos 3 dias)
+                    </h3>
+                    <div className="match-grid">
+                      {results.map((m) => (
+                        <MatchCard
+                          key={m.id}
+                          match={m}
+                          selected={false}
+                          onSelect={() => void openMatch(m)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {upcoming.length === 0 && results.length === 0 && (
+                  <div className="loading">Nenhum jogo neste período.</div>
+                )}
+              </>
             )}
           </>
         )}

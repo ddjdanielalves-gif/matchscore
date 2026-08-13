@@ -35,6 +35,46 @@ def probabilities(lh: float, la: float) -> dict[str, float]:
     }
 
 
+def goals_stats(lh: float, la: float) -> dict[str, float]:
+    """Over/under totals and BTTS, derived from the same Poisson model."""
+    total_grid: dict[float, float] = {}
+
+    def prob_total(total: float) -> float:
+        if total not in total_grid:
+            p = sum(
+                poisson_pmf(x, lh) * poisson_pmf(y, la)
+                for x in range(_GOALS_MAX + 1)
+                for y in range(_GOALS_MAX + 1)
+                if x + y > total
+            )
+            total_grid[total] = min(100.0, p * 100)
+        return total_grid[total]
+
+    both_teams = (1 - poisson_pmf(0, lh)) * (1 - poisson_pmf(0, la))
+    return {
+        "over_0_5": round(prob_total(0.5), 1),
+        "under_0_5": round(100.0 - prob_total(0.5), 1),
+        "over_1_5": round(prob_total(1.5), 1),
+        "under_1_5": round(100.0 - prob_total(1.5), 1),
+        "over_2_5": round(prob_total(2.5), 1),
+        "under_2_5": round(100.0 - prob_total(2.5), 1),
+        "over_3_5": round(prob_total(3.5), 1),
+        "under_3_5": round(100.0 - prob_total(3.5), 1),
+        "btts_yes": round(min(100.0, both_teams * 100), 1),
+        "btts_no": round(min(100.0, (1 - both_teams) * 100), 1),
+    }
+
+
+def likely_score(lh: float, la: float) -> dict[str, str | float]:
+    best, bp = (0, 0), -1.0
+    for x in range(_GOALS_MAX + 1):
+        for y in range(_GOALS_MAX + 1):
+            p = poisson_pmf(x, lh) * poisson_pmf(y, la)
+            if p > bp:
+                best, bp = (x, y), p
+    return {"score": f"{best[0]}-{best[1]}", "prob": round(bp * 100, 1)}
+
+
 def compute_elos(finished: list[Match]) -> dict[int, float]:
     elo: dict[int, float] = {}
     for m in sorted(finished, key=lambda x: x.date):
@@ -187,6 +227,8 @@ class ProbabilityEngine:
 
         lh, la = self.lambdas(home, away, avg)
         probs_all = probabilities(lh, la)
+        goals = goals_stats(lh, la)
+        score = likely_score(lh, la)
 
         provider_pred = self.ds.predictions(match.id)
         blended = probs_all
@@ -211,6 +253,8 @@ class ProbabilityEngine:
             match=match,
             probabilities=blended,
             expected_goals={"home": round(lh, 2), "away": round(la, 2)},
+            goals=goals,
+            likely_score=score,
             home=home,
             away=away,
             factors=factors,

@@ -32,6 +32,12 @@ export interface MatchesResponse {
   source: string[]
 }
 
+export interface ResultsResponse {
+  matches: Match[]
+  days: number
+  source: string[]
+}
+
 export interface PlayerIssue {
   player_id: number | null
   player: string
@@ -66,6 +72,19 @@ export interface Analysis {
   match: Match
   probabilities: { home_win: number; draw: number; away_win: number }
   expected_goals: { home: number; away: number }
+  goals: {
+    over_0_5: number
+    under_0_5: number
+    over_1_5: number
+    under_1_5: number
+    over_2_5: number
+    under_2_5: number
+    over_3_5: number
+    under_3_5: number
+    btts_yes: number
+    btts_no: number
+  }
+  likely_score: { score: string; prob: number }
   home: TeamContext
   away: TeamContext
   factors: FactorContribution[]

@@ -78,6 +78,52 @@ export default function AnalysisView({ analysis }: { analysis: Analysis }) {
         </div>
       </section>
 
+      <section className="card">
+        <h4>Gols na partida</h4>
+        <div className="goals-table">
+          {(
+            [
+              ["0,5", analysis.goals.over_0_5, analysis.goals.under_0_5],
+              ["1,5", analysis.goals.over_1_5, analysis.goals.under_1_5],
+              ["2,5", analysis.goals.over_2_5, analysis.goals.under_2_5],
+              ["3,5", analysis.goals.over_3_5, analysis.goals.under_3_5],
+            ] as const
+          ).map(([line, over, under]) => (
+            <div className="goals-row" key={line}>
+              <span className="goals-line">Total {line} gols</span>
+              <div className="goals-bar">
+                <span
+                  className="goals-bar-over"
+                  style={{ width: `${over}%` }}
+                  title={`Mais de ${line}: ${over}%`}
+                />
+              </div>
+              <span className="goals-pct goals-over">
+                Mais de {line}: {over}%
+              </span>
+              <span className="goals-pct goals-under">
+                Menos de {line}: {under}%
+              </span>
+            </div>
+          ))}
+          <div className="goals-row">
+            <span className="goals-line">Ambos marcam?</span>
+            <span className="goals-pct goals-over">
+              Sim: {analysis.goals.btts_yes}%
+            </span>
+            <span className="goals-pct goals-under">
+              Não: {analysis.goals.btts_no}%
+            </span>
+          </div>
+          <div className="goals-row goals-row-score">
+            <span className="goals-line">Placar mais provável</span>
+            <span className="likely-score">
+              <b>{analysis.likely_score.score}</b> ({analysis.likely_score.prob}%)
+            </span>
+          </div>
+        </div>
+      </section>
+
       {provider && (
         <section className="card">
           <h4>

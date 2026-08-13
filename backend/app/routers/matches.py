@@ -55,11 +55,12 @@ def matches(round: int | None = None):
     rounds = sorted(numbered_rounds, key=_round_number)
 
     if round is not None:
-        # Filter directly over the full fixtures window instead of only
-        # over `upcoming()`, so a requested round that falls outside
-        # "what's happening right now" still returns its matches (including
-        # already-finished ones) instead of an empty list.
-        current = [m for m in fixtures if _round_number(m.round) == round]
+        # Try the requested matchday of the current season first; fall back
+        # to the current window and, finally, to the completed season so a
+        # requested round still returns its matches instead of an empty list.
+        current = _ds.upcoming(round)
+        if not current:
+            current = [m for m in fixtures if _round_number(m.round) == round]
         if not current:
             current = [m for m in _ds.all_finished() if _round_number(m.round) == round]
     else:

@@ -201,6 +201,16 @@ h4 {
   gap: 14px;
 }
 
+.list-section {
+  margin-bottom: 24px;
+}
+
+.section-title {
+  font-size: 15px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
 .match-card {
   background: var(--card);
   border: 1px solid var(--border);
@@ -796,6 +806,79 @@ table.standings td {
   border-radius: 6px;
   background: var(--bg-2);
   border: 1px solid var(--border);
+}
+
+/* --------------------------------------------------------- goals card */
+.goals-table {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.goals-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  grid-template-rows: auto auto;
+  gap: 2px 12px;
+  align-items: center;
+}
+
+.goals-line {
+  grid-column: 1;
+  grid-row: 1;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.goals-bar {
+  grid-column: 2;
+  grid-row: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg-2);
+  overflow: hidden;
+}
+
+.goals-bar-over {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--green), var(--amber));
+  border-radius: 999px;
+  transition: width 0.6s ease;
+}
+
+.goals-pct {
+  grid-column: 2;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.goals-over {
+  grid-row: 2;
+}
+
+.goals-under {
+  grid-row: 3;
+}
+
+.goals-row-score {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.likely-score b {
+  font-size: 18px;
+  color: var(--text);
+  margin-right: 4px;
+}
+
+.likely-score {
+  font-size: 13px;
+  color: var(--muted);
 }
 
 .footer {

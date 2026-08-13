@@ -835,7 +835,10 @@ class RapidApiProvider:
             )
 
         return Standings(
-            entries=rows
+            competition="Campeonato Brasileiro Serie A",
+            season=settings.season,
+            rows=rows,
+            source="api",
         )
 
     # ============================================================

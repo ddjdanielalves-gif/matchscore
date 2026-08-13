@@ -7,12 +7,7 @@ export default function StandingsTable({ standings }: { standings: Standings }) 
     <section className="card">
       <div className="standings-head">
         <h3>{standings.competition}</h3>
-        <span className="standings-season">
-          Temporada {standings.season}
-          {standings.source === "api" && (
-            <span className="api-note"> · ultima completa no plano gratuito</span>
-          )}
-        </span>
+        <span className="standings-season">Temporada {standings.season}</span>
       </div>
       <div className="table-wrap">
         <table className="standings">

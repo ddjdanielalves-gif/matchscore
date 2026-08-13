@@ -1,4 +1,4 @@
-import type { Analysis, MatchesResponse, Standings } from "./types"
+import type { Analysis, MatchesResponse, ResultsResponse, Standings } from "./types"
 
 // Absolute backend URL for the mobile (Capacitor) build; empty means the API
 // is served from the same origin (web deploy / local dev).
@@ -13,6 +13,10 @@ async function get<T>(path: string): Promise<T> {
 export function fetchMatches(round?: number): Promise<MatchesResponse> {
   const q = round ? `?round=${round}` : ""
   return get<MatchesResponse>(`/api/matches${q}`)
+}
+
+export function fetchResults(days = 3): Promise<ResultsResponse> {
+  return get<ResultsResponse>(`/api/results?days=${days}`)
 }
 
 export function fetchAnalysis(matchId: number): Promise<Analysis> {
